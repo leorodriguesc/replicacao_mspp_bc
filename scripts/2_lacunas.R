@@ -1,6 +1,6 @@
 lp0 <- log_posterior(theta_modo)        # especificação principal, no modo
 
-# PARTE A — De onde vêm as calibrações
+# De onde vêm as calibrações
 # Critério: no modo, os erros de previsão padronizados de cada equação têm
 # desvio-padrão próximo de 1 (entre 0,75 e 1,33) e média próxima de 0 (|média| < 0,25).
 # Os desvios foram obtidos reescalando cada um pelo desvio-padrão do seu resíduo
