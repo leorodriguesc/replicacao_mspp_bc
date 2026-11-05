@@ -19,7 +19,7 @@ fora <- rownames(residuos)[residuos[, "desvio"] < 0.75 | residuos[, "desvio"] > 
                              abs(residuos[, "media"]) > 0.25]
 cat("Fora do critério:", if (length(fora)) paste(fora, collapse = ", ") else "nenhuma", "\n\n")
 
-# ---- A2 [grade] ----
+#A2 [grade]
 # A escala dos termos de crise entra na grade só como informação: é escolha própria
 # (ver o comentário em ESPEC_PRINCIPAL, no 1_modelo.R).
 # Critério: o valor de maior log-posteriori, reestimando o modo em cada ponto
