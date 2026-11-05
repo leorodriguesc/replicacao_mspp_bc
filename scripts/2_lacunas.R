@@ -1,6 +1,9 @@
 lp0 <- log_posterior(theta_modo)        # especificação principal, no modo
 
-# De onde vêm as calibrações
+# ============================================================
+# PARTE A — De onde vêm as calibrações
+# ============================================================
+# ---- A1 [resíduo] ----
 # Critério: no modo, os erros de previsão padronizados de cada equação têm
 # desvio-padrão próximo de 1 (entre 0,75 e 1,33) e média próxima de 0 (|média| < 0,25).
 # Os desvios foram obtidos reescalando cada um pelo desvio-padrão do seu resíduo
@@ -19,7 +22,7 @@ fora <- rownames(residuos)[residuos[, "desvio"] < 0.75 | residuos[, "desvio"] > 
                              abs(residuos[, "media"]) > 0.25]
 cat("Fora do critério:", if (length(fora)) paste(fora, collapse = ", ") else "nenhuma", "\n\n")
 
-#A2 [grade]
+# ---- A2 [grade] ----
 # A escala dos termos de crise entra na grade só como informação: é escolha própria
 # (ver o comentário em ESPEC_PRINCIPAL, no 1_modelo.R).
 # Critério: o valor de maior log-posteriori, reestimando o modo em cada ponto
@@ -101,23 +104,9 @@ if (file.exists(ARQ_NEUTRA)) {
 }
 
 # ============================================================
-# PARTE B — Ambiguidade do erro de medida
-# ============================================================
-# O texto do boxe sugere o erro na série original; a equação, na série
-# normalizada. Avalia as duas leituras nas modas do BCB, sem as nossas estimativas.
-loglik_bcb <- function() as.numeric(logLik(construir_kfas_lp(combinar_par(par_bcb_base),
-                                                             dados_exog, dados_obs, s_perfil)$modelo))
-ll_norm <- loglik_bcb()
-ll_orig <- com_espec(espec(erro_medida = "original"), loglik_bcb())
-cat(sprintf("B. Log-verossimilhança nas modas do BCB — série normalizada: %.2f | original: %.2f (diferença %.1f)\n\n",
-            ll_norm, ll_orig, ll_norm - ll_orig))
-
-
-# ============================================================
-# PARTE C — Variantes: uma alternativa por lacuna (ordem da tabela da seção 3.4)
+# PARTE B — Variantes: uma alternativa por lacuna (ordem da tabela da seção 3.4)
 # ============================================================
 VARIANTES <- list(
-  "Erro de medida na série original"          = espec(erro_medida = "original"),
   "Selic esperada no ponto de 12 meses"       = espec(selic_esperada = "ponto"),
   "Administrados pela expectativa Focus"      = espec(adm_projecao = "focus"),
   "Termos de crise da IS × 2"                 = espec(crise_escala = 2),
@@ -159,7 +148,7 @@ linhas <- lapply(names(VARIANTES), function(nm) {
     o <- otimizar(theta_modo)
     resumo(o$par, -o$value, ref)
   })
-  cat(sprintf("C. %-42s %.1f min\n", nm, as.numeric(difftime(Sys.time(), t0, units = "mins"))))
+  cat(sprintf("B. %-42s %.1f min\n", nm, as.numeric(difftime(Sys.time(), t0, units = "mins"))))
   l
 })
 tab <- cbind(variante = c("Especificação principal", names(VARIANTES)),
@@ -167,7 +156,7 @@ tab <- cbind(variante = c("Especificação principal", names(VARIANTES)),
 tab$dif_logpost <- tab$logpost - lp0
 
 # ============================================================
-# PARTE D — Regra de decisão
+# PARTE C — Regra de decisão
 # ============================================================
 # Uma escolha pesa se mudar algum resultado:
 #   parâmetros: 2 ou mais modos mudam de lado do intervalo do BCB, ou α1I ou φ2

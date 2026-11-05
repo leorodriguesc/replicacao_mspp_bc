@@ -113,7 +113,6 @@ prev_ar <- function(v, x_t, j) ar_coefs[[v]]$mu + ar_coefs[[v]]$rho^j * (x_t - a
 #quanto cada uma pesa nos resultados.
 
 ESPEC_PRINCIPAL <- list(
-  erro_medida    = "normalizada",  
   selic_esperada = "media",        
   adm_projecao   = "ipca12m",      
   sigma_eps_h    = 0.15,           # choque ordinário da IS
@@ -199,10 +198,9 @@ construir_modelo <- function(par, ex) {
   Z[obs$selic,    idx$pi_e]     <- lambda_taylor * pp$theta_3
   Z[obs$pi_focus, idx$pi_e]     <- 1
   
-  # Erros de medida dos indicadores de atividade: na série normalizada (f_x/γ_x),
-  # desvio γ_x σ_h; na leitura alternativa, σ_h na série original
-  g_err <- if (ESPEC$erro_medida == "normalizada")
-    c(1, pp$gamma_nuci, pp$gamma_emp, pp$gamma_caged) else c(1, 1, 1, 1)
+  # Erros de medida dos indicadores de atividade: desvio σ_h na série dividida por γ
+  # (eqs. 6–9 do boxe), ou seja, γ σ_h na série original
+  g_err <- c(1, pp$gamma_nuci, pp$gamma_emp, pp$gamma_caged)
   H <- diag(c((g_err * pp$sigma_h)^2, pp$sigma_L^2, pp$sigma_i^2, pp$sigma_e^2,
               pp$sigma_pi_e_obs^2))
   
