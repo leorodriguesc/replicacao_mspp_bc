@@ -107,7 +107,6 @@ if (file.exists(ARQ_NEUTRA)) {
 # PARTE B — Variantes: uma alternativa por lacuna (ordem da tabela da seção 3.4)
 # ============================================================
 VARIANTES <- list(
-  "Selic esperada no ponto de 12 meses"       = espec(selic_esperada = "ponto"),
   "Administrados pela expectativa Focus"      = espec(adm_projecao = "focus"),
   "Termos de crise da IS × 2"                 = espec(crise_escala = 2),
   "Choques das taxas neutras = 0,25"          = espec(sigma_rr = 0.25),

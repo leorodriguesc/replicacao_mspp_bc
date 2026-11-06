@@ -31,11 +31,6 @@ ler_brutos <- function() {
 
 preparar_dados <- function(e, brutos = BRUTOS) {
   painel <- brutos$painel
-  if (e$selic_esperada == "ponto") {    
-    painel$exp_selic_12m    <- painel$exp_selic_12m_ponto
-    painel$juro_real_hp     <- painel$juro_real_hp_ponto
-    painel$juro_real_exante <- painel$juro_real_exante_ponto
-  }
   painel_anual <- painel |>
     select(-any_of(c("cds", "hiato_novo"))) |>
     left_join(brutos$cds_trim, by = "trimestre") |>
@@ -113,7 +108,6 @@ prev_ar <- function(v, x_t, j) ar_coefs[[v]]$mu + ar_coefs[[v]]$rho^j * (x_t - a
 #quanto cada uma pesa nos resultados.
 
 ESPEC_PRINCIPAL <- list(
-  selic_esperada = "media",        
   adm_projecao   = "ipca12m",      
   sigma_eps_h    = 0.15,           # choque ordinário da IS
   sigma_pi_e     = 0.25,           # choque da equação de expectativas
