@@ -29,8 +29,57 @@ ler_brutos <- function() {
   list(painel = painel, cds_trim = cds_trim, hiato_mundo = hiato_mundo)
 }
 
+# Anexo estatístico do RI de jun/2024: dados dos gráficos e tabelas do relatório.
+# Usado aqui (Tabela 1, hiato e taxa neutra), no 2_lacunas.R (medidas de taxa neutra)
+# e no 3_irf_modelo.R (respostas a choques).
+ARQ_ANEXO <- "ri202406anp.xlsx"
+como_num  <- function(x) suppressWarnings(as.numeric(x))
+aba_anexo <- function(nome) as.data.frame(suppressMessages(
+  read_excel(ARQ_ANEXO, sheet = nome, col_names = FALSE)))
+# Séries trimestrais (o anexo data cada trimestre pelo último mês)
+serie_anexo <- function(nome, nomes) {
+  a <- aba_anexo(nome); a <- a[!is.na(como_num(a[[1]])) & como_num(a[[1]]) > 30000, ]
+  d <- data.frame(trimestre = floor_date(as.Date(como_num(a[[1]]), origin = "1899-12-30"), "quarter"))
+  for (j in seq_along(nomes)) d[[nomes[j]]] <- como_num(a[[j + 1]])
+  d
+}
+# Valor de uma linha de tabela, procurada pelo rótulo da primeira coluna
+valor_anexo <- function(nome, rotulo, coluna) {
+  a <- aba_anexo(nome)
+  como_num(a[grepl(rotulo, a[[1]], fixed = TRUE), coluna][1])
+}
+
+# Tendência do juro real ex-ante (filtro HP, lambda = 1.600), recalculada aqui com
+# a informação disponível na data do boxe: a série observada vai até FIM_INFO e é
+# estendida pelo cenário do RI de jun/2024 (Gráfico 2.2.2, juro real Focus quatro
+# trimestres à frente, até 2026T4), como o BCB faz com a sua medida de tendência
+# (Focus 1 ano à frente, filtro HP: 5,2 em 2023T2 e 5,7 em 2024T2). O juro real é a
+# taxa composta, (1 + i^e)/(1 + pi^e) - 1, a mesma do Gráfico 2.2.2: é com ela que a
+# medida publicada pelo BCB se reproduz. Na IS, o juro real continua a diferença
+# simples i^e - pi^e (equação do boxe), porque pi^e é um estado e o modelo precisa ser
+# linear nele; a diferença de nível entre as duas formas fica no componente persistente.
+# Substitui a coluna juro_real_hp da base, que usa dados até 2025T4.
+FIM_INFO  <- as.Date("2024-01-01")
+filtro_hp <- function(x, lambda = 1600) {
+  n <- length(x); D <- diff(diag(n), differences = 2)
+  as.numeric(solve(diag(n) + lambda * crossprod(D), x))
+}
+tendencia_juro_real <- function(painel) {
+  cen <- serie_anexo("Graf 2.2.2", c("ri", "ri_anterior"))
+  composta <- ((1 + painel$exp_selic_12m / 100) / (1 + painel$exp_ipca_12m / 100) - 1) * 100
+  obs <- which(!is.na(composta) & painel$trimestre <= FIM_INFO)
+  com <- match(cen$trimestre[cen$trimestre <= FIM_INFO], painel$trimestre)
+  ajuste <- mean(composta[com] - cen$ri[cen$trimestre <= FIM_INFO])   # conferência: deve ficar perto de 0
+  ext <- cen$ri[cen$trimestre > FIM_INFO]
+  tend <- filtro_hp(c(composta[obs], ext))
+  out <- rep(NA_real_, nrow(painel)); out[obs] <- tend[seq_along(obs)]
+  attr(out, "ajuste") <- ajuste
+  out
+}
+
 preparar_dados <- function(e, brutos = BRUTOS) {
   painel <- brutos$painel
+  painel$juro_real_hp <- as.numeric(tendencia_juro_real(painel))
   painel_anual <- painel |>
     select(-any_of(c("cds", "hiato_novo"))) |>
     left_join(brutos$cds_trim, by = "trimestre") |>
@@ -163,6 +212,10 @@ list2env(preparar_dados(ESPEC), envir = globalenv())   # painel_anual, dados_obs
 cat("Amostra efetiva:", format(dados_obs$trimestre[efetivo[1]]), "a",
     format(max(dados_obs$trimestre)), "|", length(efetivo), "trimestres\n")
 print(summary(dados_obs[efetivo, -1]))
+cat(sprintf("Tendência do juro real (taxa composta): diferença para o Gráfico 2.2.2 até 2024T1 %+.2f p.p. | 2023T2 %.2f | 2023T4 %.2f\n",
+            attr(tendencia_juro_real(BRUTOS$painel), "ajuste"),
+            dados_exog$juro_real_hp[dados_exog$trimestre == as.Date("2023-04-01")],
+            dados_exog$juro_real_hp[dados_exog$trimestre == as.Date("2023-10-01")]))
 
 # equacoes e espaco de estados --------------------------------------------
 # Estados: h, r̂r^IS, r̂r^T, s, π^e, h_{t−1}, π^e_{t−1}, r̂r^IS_{t−1} e uma
@@ -424,6 +477,12 @@ IC_BCB <- rbind(
           1.54, -0.52, 2.64, 0.82, 0.13, 0.049, 3.22, 2.12, 1.25, 0.79, 1.21))
 colnames(IC_BCB) <- nomes_theta
 
+# Conferência com a Tabela 1 do boxe no anexo estatístico
+t1 <- aba_anexo("C2 Boxe3 Tab 1"); t1 <- t1[!is.na(como_num(t1[[5]])), ]
+ic_anexo <- do.call(rbind, lapply(strsplit(gsub("[][ ]", "", gsub(",", ".", t1[[6]])), ";"), as.numeric))
+cat(sprintf("Tabela 1 x anexo: maior diferença nas modas %.4f | nos intervalos %.4f\n",
+            max(abs(como_num(t1[[5]]) - par_canonico)), max(abs(ic_anexo - t(IC_BCB)))))
+
 # Unidades do código (anualizadas) -> unidades do boxe: dividir por `escala`
 escala <- setNames(ifelse(nomes_theta %in% c("alpha_4", "alpha_5", "alpha_6", "delta"), 4, 1),
                    nomes_theta)
@@ -683,6 +742,40 @@ for (nm in c("hiato", "neutra")) {
               nm, lp, lt, 100 * (1 - (lp / lt)^2)))
 }
 
+# ---- Comparação com o BCB (anexo estatístico do RI de jun/2024) ----
+# Hiato: Gráfico 2.2.6 do RI, com faixa de ±2 desvios-padrão. O RI informa que esse
+# hiato parte dos modelos de pequeno porte, mas incorpora outras metodologias e o
+# julgamento do Copom (seção 2.2): não é o hiato puro do modelo agregado.
+hiato_bcb   <- serie_anexo("Graf 2.2.6", c("bcb", "bcb_sup", "bcb_inf"))
+serie_hiato <- left_join(serie_hiato, hiato_bcb, by = "trimestre")
+cmp_hiato <- function(k, rotulo) with(serie_hiato[k, ], cat(sprintf(
+  "%-22s correlação %.3f | diferença média %+.2f | REQM %.2f p.p.\n", rotulo,
+  cor(mediana, bcb), mean(mediana - bcb), sqrt(mean((mediana - bcb)^2)))))
+cat("\nHiato x BCB (Gráfico 2.2.6 do RI de jun/2024):\n")
+cmp_hiato(TRUE, "Amostra toda")
+cmp_hiato(serie_hiato$trimestre <  as.Date("2020-01-01"), "2003T4-2019T4")
+cmp_hiato(serie_hiato$trimestre >= as.Date("2020-01-01"), "2020T1-2023T4")
+with(serie_hiato, cat(sprintf(paste0(
+  "Mesmo sinal: %.0f%% dos trimestres | nosso hiato na faixa do BCB: %.0f%% | ",
+  "hiato do BCB na nossa faixa de 90%% (parâmetros e filtragem): %.0f%%\n",
+  "Largura média das faixas: nossa (90%%) %.2f | BCB (±2 dp) %.2f, equivalente a %.2f com 90%%\n"),
+  100 * mean(sign(mediana) == sign(bcb)), 100 * mean(mediana >= bcb_inf & mediana <= bcb_sup),
+  100 * mean(bcb >= q05_tot & bcb <= q95_tot), mean(q95_tot - q05_tot),
+  mean(bcb_sup - bcb_inf), mean(bcb_sup - bcb_inf) / 4 * 2 * 1.645)))
+print(transform(serie_hiato[serie_hiato$trimestre %in% as.Date(c("2008-07-01", "2009-01-01", "2013-10-01",
+                                                                 "2016-10-01", "2020-04-01", "2023-10-01")), c("trimestre", "mediana", "bcb")],
+                mediana = round(mediana, 2), dif = round(mediana - bcb, 2)), row.names = FALSE)
+
+# Taxa neutra: Tabela 1 do boxe "Atualização de medidas de taxa de juros real neutra
+# no Brasil" (RI jun/2024), valores de 2023T2
+TRI_NEUTRA     <- as.Date("2023-04-01")
+neutra_bcb     <- valor_anexo("C2 Boxe2 Tab 1", "Modelo agregado", 4)
+tendencia_bcb  <- valor_anexo("C2 Boxe2 Tab 1", "1 ano à frente, filtro HP", 4)
+n23 <- serie_neutra[serie_neutra$trimestre == TRI_NEUTRA, ]
+cat(sprintf(paste0("\nTaxa neutra em 2023T2: nossa %.2f, faixa de 90%% [%.2f; %.2f] | BCB, modelo agregado %.1f\n",
+                   "Tendência HP do juro real em 2023T2: nossa %.2f | BCB (Focus 1 ano à frente, filtro HP) %.1f\n"),
+            n23$mediana, n23$q05_tot, n23$q95_tot, neutra_bcb, n23$tendencia, tendencia_bcb))
+
 # Projeção do modelo contra a Focus e o IPCA realizado
 # Estado filtrado, no modo
 r_modo <- construir_kfas_lp(combinar_par(theta_modo), dados_exog, dados_obs, s_perfil)
@@ -800,15 +893,21 @@ g4 <- ggplot(serie_hiato, aes(trimestre)) +
   geom_hline(yintercept = 0, colour = CINZA, linewidth = 0.3) +
   geom_ribbon(aes(ymin = q05_tot, ymax = q95_tot, fill = "Parâmetros e filtragem")) +
   geom_ribbon(aes(ymin = q05_par, ymax = q95_par, fill = "Incerteza dos parâmetros")) +
-  geom_line(aes(y = mediana, colour = "Mediana"), linewidth = 0.8) +
+  geom_line(aes(y = bcb, colour = "BCB (RI de jun/2024)"), linewidth = 0.6, linetype = "dashed") +
+  geom_line(aes(y = mediana, colour = "Nosso hiato (mediana)"), linewidth = 0.8) +
   geom_point(data = marcas, aes(y = mediana), colour = AZUL, size = 1.4) +
   geom_text(data = marcas, aes(y = mediana, label = rot), size = TAM / 3.4, family = FONTE,
             vjust = ifelse(marcas$mediana > 0, -1.2, 1.9),
             hjust = ifelse(marcas$trimestre > as.Date("2022-01-01"), 1, 0.5)) +
-  bandas + scale_colour_manual(values = c(Mediana = AZUL)) +
+  bandas +
+  scale_colour_manual(values = c("Nosso hiato (mediana)" = AZUL, "BCB (RI de jun/2024)" = "black"),
+                      breaks = c("Nosso hiato (mediana)", "BCB (RI de jun/2024)")) +
+  guides(colour = guide_legend(order = 1, override.aes = list(linetype = c("solid", "dashed"))),
+         fill = guide_legend(order = 2)) +
   anos + scale_y_continuous(labels = virgula, breaks = seq(-8, 2, 2)) +
-  labs(x = NULL, y = "% do produto potencial") + tema
-salvar(g4, "fig4_4_hiato.pdf", 9)
+  labs(x = NULL, y = "% do produto potencial") +
+  tema + theme(legend.box = "vertical", legend.spacing.y = unit(0, "pt"))
+salvar(g4, "fig4_4_hiato.pdf", 9.5)
 
 #taxa neutra, juro real ex-ante e sua tendência HP
 g5 <- ggplot(serie_neutra, aes(trimestre)) +
@@ -824,5 +923,5 @@ g5 <- ggplot(serie_neutra, aes(trimestre)) +
   anos + scale_y_continuous(labels = virgula, breaks = seq(-2, 14, 2)) +
   labs(x = NULL, y = "% ao ano") +
   tema + theme(legend.box = "vertical", legend.spacing.y = unit(0, "pt")) +
-  guides(fill = guide_legend(order = 2), colour = guide_legend(order = 1))
+  guides(fill = guide_legend(order = 2), colour = guide_legend(order = 1), shape = guide_legend(order = 3))
 salvar(g5, "fig4_5_neutro.pdf", 10.5)

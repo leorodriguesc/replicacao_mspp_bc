@@ -65,43 +65,41 @@ for (nm in names(GRADES)) {
 # taxa neutra tenha variância semelhante à da média e da mediana das medidas de
 # taxa neutra do boxe "Atualização de medidas de taxa de juros real neutra no
 # Brasil" (RI jun/2024, Gráfico 1).
-# Arquivo: primeira coluna = trimestre (data ou "2003T4"); uma coluna por medida
-# ou grupo de medidas. Compara nos trimestres comuns à nossa amostra, no modo.
-ARQ_NEUTRA <- "dados_grafico_taxa_neutra.xlsx"
-ler_trimestre <- function(x) {
-  if (inherits(x, c("Date", "POSIXct"))) return(floor_date(as.Date(x), "quarter"))
-  x <- toupper(as.character(x))
-  as.Date(sprintf("%s-%02d-01", substr(x, 1, 4), 3 * as.integer(substr(x, nchar(x), nchar(x))) - 2))
-}
-if (file.exists(ARQ_NEUTRA)) {
-  med  <- read_excel(ARQ_NEUTRA)
-  tri  <- ler_trimestre(med[[1]])
-  vals <- as.matrix(med[, -1])
-  datas <- dados_obs$trimestre[efetivo]
-  comum <- datas %in% tri
-  k     <- match(datas[comum], tri)
-  alvo  <- c(media   = sd(rowMeans(vals[k, , drop = FALSE], na.rm = TRUE)),
-             mediana = sd(apply(vals[k, , drop = FALSE], 1, median, na.rm = TRUE)))
-  cat(sprintf("\nA3. Medidas do boxe (%d trimestres em comum): desvio-padrão da média %.2f | da mediana %.2f\n",
-              sum(comum), alvo["media"], alvo["mediana"]))
-  cat(sprintf("Referência: desvio-padrão da tendência HP do juro real sozinha %.2f\n",
-              sd(dados_exog$juro_real_hp[efetivo][comum])))
-  neutra <- t(sapply(c(0.05, 0.10, 0.15, 0.25, 0.40, 0.60, 1.00), function(sg) {
-    rr <- com_espec(espec(sigma_rr = sg), {
-      a <- KFS(construir_kfas_lp(combinar_par(theta_modo), dados_exog, dados_obs, s_perfil)$modelo,
-               smoothing = "state")$alphahat
-      dados_exog$juro_real_hp[efetivo] + a[, idx$r_is]
-    })
-    c(sigma_rr = sg, dp_taxa_neutra = sd(rr[comum]))
-  }))
-  print(round(neutra, 2))
-  k_min <- which.min(abs(neutra[, "dp_taxa_neutra"] - mean(alvo)))
-  cat(sprintf("Valor mais próximo do alvo (%.2f): %.2f%s | em uso: %.2f\n\n",
-              mean(alvo), neutra[k_min, "sigma_rr"],
-              if (k_min %in% c(1, nrow(neutra))) " (na borda da grade)" else "", ESPEC_PRINCIPAL$sigma_rr))
-} else {
-  cat("\nA3. Arquivo", ARQ_NEUTRA, "não encontrado: critério do boxe não verificado.\n\n")
-}
+# Os dados vêm do anexo estatístico (medianas de cinco grupos de medidas). Os grupos
+# não cobrem o mesmo período: até 2005T1 só há o grupo Focus, e o NTN-B começa em
+# 2007T1. Por isso o alvo é calculado de duas formas, nos trimestres com os cinco
+# grupos e em toda a amostra (com os grupos disponíveis em cada trimestre). No modo.
+a3 <- aba_anexo("C2 Boxe2 Graf 1"); a3 <- a3[grepl("^20[0-9]{2}:[1-4]$", a3[[1]]), ]
+grupos <- data.frame(trimestre = as.Date(sprintf("%s-%02d-01", substr(a3[[1]], 1, 4),
+                                                 3 * como_num(substr(a3[[1]], 6, 6)) - 2)),
+                     sapply(a3[2:6], como_num))
+names(grupos)[-1] <- c("focus", "ntnb", "externas", "af_bf", "modelos_bc")
+datas <- dados_obs$trimestre[efetivo]
+k     <- match(datas, grupos$trimestre)
+vals  <- as.matrix(grupos[k, -1])
+todos <- complete.cases(vals)
+dp_alvo <- function(sel) c(media   = sd(rowMeans(vals[sel, , drop = FALSE], na.rm = TRUE)),
+                           mediana = sd(apply(vals[sel, , drop = FALSE], 1, median, na.rm = TRUE)))
+alvos <- rbind(cinco_grupos = dp_alvo(todos), amostra_toda = dp_alvo(TRUE))
+cat("\nA3. Desvio-padrão das medidas do boxe (média e mediana dos grupos):\n"); print(round(alvos, 2))
+cat(sprintf("Trimestres com os cinco grupos: %d (%s a %s) | tendência HP sozinha: %.2f nesses trimestres, %.2f na amostra toda\n",
+            sum(todos), format(min(datas[todos])), format(max(datas[todos])),
+            sd(dados_exog$juro_real_hp[efetivo][todos]), sd(dados_exog$juro_real_hp[efetivo])))
+neutra <- t(sapply(c(0.05, 0.10, 0.15, 0.25, 0.40, 0.60, 1.00), function(sg) {
+  rr <- com_espec(espec(sigma_rr = sg), {
+    a <- KFS(construir_kfas_lp(combinar_par(theta_modo), dados_exog, dados_obs, s_perfil)$modelo,
+             smoothing = "state")$alphahat
+    dados_exog$juro_real_hp[efetivo] + a[, idx$r_is]
+  })
+  c(sigma_rr = sg, dp_cinco_grupos = sd(rr[todos]), dp_amostra_toda = sd(rr),
+    neutra_2023T2 = rr[datas == TRI_NEUTRA])
+}))
+print(round(neutra, 2))
+cat(sprintf(paste0("Alvo (média de média e mediana): %.2f nos cinco grupos e %.2f na amostra toda | ",
+                   "menor desvio na grade: %.2f e %.2f | em uso: %.2f\n"),
+            mean(alvos["cinco_grupos", ]), mean(alvos["amostra_toda", ]),
+            min(neutra[, "dp_cinco_grupos"]), min(neutra[, "dp_amostra_toda"]), ESPEC_PRINCIPAL$sigma_rr))
+cat(sprintf("Taxa neutra do BCB em 2023T2 (modelo agregado): %.1f\n\n", neutra_bcb))
 
 # ============================================================
 # PARTE B — Variantes: uma alternativa por lacuna (ordem da tabela da seção 3.4)
@@ -122,7 +120,11 @@ trajetorias <- function(th) {
        neutra = dados_exog$juro_real_hp[r$idx_amostra] + as.numeric(a[, idx$r_is]))
 }
 
-# O que se compara em cada modo (unidades do boxe)
+# O que se compara em cada modo (unidades do boxe). As três últimas colunas
+# comparam com o BCB (anexo estatístico, lido no 1_modelo.R): hiato do Gráfico 2.2.6
+# e taxa neutra do modelo agregado em 2023T2.
+datas_ef <- dados_obs$trimestre[efetivo]
+h_bcb    <- hiato_bcb$bcb[match(datas_ef, hiato_bcb$trimestre)]
 resumo <- function(th, lp, ref = NULL) {
   tr <- trajetorias(th)
   tb <- th / escala
@@ -134,7 +136,10 @@ resumo <- function(th, lp, ref = NULL) {
     lambda     = 1 - tb[["theta_1"]] - tb[["theta_2"]],
     efeito_LP  = (tb[["beta2"]] / 4) / (1 - tb[["beta1"]]),
     cor_hiato  = if (is.null(ref)) 1 else cor(tr$hiato, ref$hiato),
-    dif_neutra = if (is.null(ref)) 0 else mean(tr$neutra - ref$neutra))
+    dif_neutra = if (is.null(ref)) 0 else mean(tr$neutra - ref$neutra),
+    cor_hiato_bcb  = cor(tr$hiato, h_bcb),
+    reqm_hiato_bcb = sqrt(mean((tr$hiato - h_bcb)^2)),
+    neutra_2023T2  = tr$neutra[datas_ef == TRI_NEUTRA])
 }
 
 ref  <- trajetorias(theta_modo)
@@ -181,3 +186,9 @@ num <- sapply(tab, is.numeric); tab[num] <- round(tab[num], 3)
 print(tab[, c("variante", "dif_logpost", "modos_IC", "alpha_1I", "phi_2", "lambda", "efeito_LP",
               "cor_hiato", "dif_neutra", "pesa_parametros", "pesa_dinamica", "pesa_nao_obs",
               "dados_decidem")], row.names = FALSE)
+
+# Comparação com o BCB: alguma variante aproxima o hiato ou a taxa neutra dos do BCB?
+# (informativa: não entra na regra de decisão)
+cat(sprintf("\nComparação com o BCB (hiato do Gráfico 2.2.6; taxa neutra do modelo agregado em 2023T2 = %.1f):\n",
+            neutra_bcb))
+print(tab[, c("variante", "cor_hiato_bcb", "reqm_hiato_bcb", "neutra_2023T2")], row.names = FALSE)
