@@ -1,8 +1,6 @@
 lp0 <- log_posterior(theta_modo)        # especificação principal, no modo
 
-# ============================================================
 # PARTE A — De onde vêm as calibrações
-# ============================================================
 # ---- A1 [resíduo] ----
 # Critério: no modo, os erros de previsão padronizados de cada equação têm
 # desvio-padrão próximo de 1 (entre 0,75 e 1,33) e média próxima de 0 (|média| < 0,25).
@@ -35,7 +33,7 @@ GRADES <- list(sigma_eps_h  = c(0.10, 0.15, 0.25, 0.50, 1.00),
                crise_escala = c(0.5, 1, 2))
 
 if (file.exists("calibracao_grades.csv")) {
-  grades <- read.csv("calibracao_grades.csv")       # apague o arquivo para refazer (~1 h)
+  grades <- read.csv("calibracao_grades.csv") 
 } else {
   grades <- do.call(rbind, lapply(names(GRADES), function(nm) do.call(rbind, lapply(GRADES[[nm]], function(v) {
     em_uso <- isTRUE(all.equal(v, ESPEC_PRINCIPAL[[nm]]))
@@ -101,9 +99,7 @@ cat(sprintf(paste0("Alvo (média de média e mediana): %.2f nos cinco grupos e %
             min(neutra[, "dp_cinco_grupos"]), min(neutra[, "dp_amostra_toda"]), ESPEC_PRINCIPAL$sigma_rr))
 cat(sprintf("Taxa neutra do BCB em 2023T2 (modelo agregado): %.1f\n\n", neutra_bcb))
 
-# ============================================================
 # PARTE B — Variantes: uma alternativa por lacuna (ordem da tabela da seção 3.4)
-# ============================================================
 VARIANTES <- list(
   "Administrados pela expectativa Focus"      = espec(adm_projecao = "focus"),
   "Termos de crise da IS × 2"                 = espec(crise_escala = 2),
@@ -159,9 +155,7 @@ tab <- cbind(variante = c("Especificação principal", names(VARIANTES)),
              rbind(base, do.call(rbind, linhas)))
 tab$dif_logpost <- tab$logpost - lp0
 
-# ============================================================
 # PARTE C — Regra de decisão
-# ============================================================
 # Uma escolha pesa se mudar algum resultado:
 #   parâmetros: 2 ou mais modos mudam de lado do intervalo do BCB, ou α1I ou φ2
 #               andam metade da distância até a moda do BCB

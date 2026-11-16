@@ -5,38 +5,23 @@ library(readxl)
 library(ggplot2)
 
 # dados -------------------------------------------------------------------
-AMOSTRA_INI    <- as.Date("2003-04-01")   
-AMOSTRA_FIM    <- as.Date("2023-10-01")   
-INICIO_EFETIVO <- 3                       
+DADOS <- read.csv("dados_modelo.csv") |> as_tibble() |> mutate(trimestre = as.Date(trimestre))
+INICIO_EFETIVO <- 3
 
-soma_lags  <- function(x, ks) Reduce(`+`, lapply(ks, function(k) dplyr::lag(x, k)))
-media_lags <- function(x, ks) soma_lags(x, ks) / length(ks)
-acum4      <- function(x) (exp(soma_lags(log1p(x / 100), 0:3)) - 1) * 100   # % em 4 trimestres
-lead_ult   <- function(x, k) coalesce(dplyr::lead(x, k), last(x))           # meta futura (conhecida)
-clima_desvio <- function(x) media_lags(x, 0:2) - media_lags(x, 3:5)       
-f_ano_corrente <- c(10, 7, 4, 1) / 12   # fração do horizonte de 12 meses no ano corrente
-
-ler_brutos <- function() {
-  painel <- read.csv("dados_consolidado.csv") |>
-    as_tibble() |> mutate(trimestre = as.Date(trimestre)) |> arrange(trimestre)
-  cds_trim <- read_excel("dados_novos.xlsx", sheet = "cds") |>          # CDS diário -> média do trimestre
-    rename(data = 1, cds = 2) |>
-    mutate(trimestre = floor_date(as.Date(data), "quarter")) |>
-    group_by(trimestre) |> summarise(cds = mean(cds, na.rm = TRUE), .groups = "drop")
-  hiato_mundo <- read_excel("dados_novos.xlsx", sheet = "hiato") |>
-    rename(data = 1, hiato_novo = 2) |>
-    transmute(trimestre = floor_date(as.Date(data), "quarter"), hiato_novo)
-  list(painel = painel, cds_trim = cds_trim, hiato_mundo = hiato_mundo)
+montar_dados <- function(e, d = DADOS) {
+  d$ipca_12m_passado <- if (e$adm_projecao == "focus") d$adm_exp_12m else d$ipca_acum4
+  list(dados_obs  = d |> select(trimestre, fpib, fnuci, femp, fcaged, pi_L = ipca_livres_sa_an,
+                                selic, dcambio = var_cambio_an, pi_focus = exp_ipca_12m),
+       dados_exog = d,
+       efetivo    = INICIO_EFETIVO:nrow(d))
 }
 
 # Anexo estatístico do RI de jun/2024: dados dos gráficos e tabelas do relatório.
-# Usado aqui (Tabela 1, hiato e taxa neutra), no 2_lacunas.R (medidas de taxa neutra)
-# e no 3_irf_modelo.R (respostas a choques).
 ARQ_ANEXO <- "ri202406anp.xlsx"
 como_num  <- function(x) suppressWarnings(as.numeric(x))
 aba_anexo <- function(nome) as.data.frame(suppressMessages(
   read_excel(ARQ_ANEXO, sheet = nome, col_names = FALSE)))
-# Séries trimestrais (o anexo data cada trimestre pelo último mês)
+
 serie_anexo <- function(nome, nomes) {
   a <- aba_anexo(nome); a <- a[!is.na(como_num(a[[1]])) & como_num(a[[1]]) > 30000, ]
   d <- data.frame(trimestre = floor_date(as.Date(como_num(a[[1]]), origin = "1899-12-30"), "quarter"))
@@ -49,110 +34,10 @@ valor_anexo <- function(nome, rotulo, coluna) {
   como_num(a[grepl(rotulo, a[[1]], fixed = TRUE), coluna][1])
 }
 
-# Tendência do juro real ex-ante (filtro HP, lambda = 1.600), recalculada aqui com
-# a informação disponível na data do boxe: a série observada vai até FIM_INFO e é
-# estendida pelo cenário do RI de jun/2024 (Gráfico 2.2.2, juro real Focus quatro
-# trimestres à frente, até 2026T4), como o BCB faz com a sua medida de tendência
-# (Focus 1 ano à frente, filtro HP: 5,2 em 2023T2 e 5,7 em 2024T2). O juro real é a
-# taxa composta, (1 + i^e)/(1 + pi^e) - 1, a mesma do Gráfico 2.2.2: é com ela que a
-# medida publicada pelo BCB se reproduz. Na IS, o juro real continua a diferença
-# simples i^e - pi^e (equação do boxe), porque pi^e é um estado e o modelo precisa ser
-# linear nele; a diferença de nível entre as duas formas fica no componente persistente.
-# Substitui a coluna juro_real_hp da base, que usa dados até 2025T4.
-FIM_INFO  <- as.Date("2024-01-01")
-filtro_hp <- function(x, lambda = 1600) {
-  n <- length(x); D <- diff(diag(n), differences = 2)
-  as.numeric(solve(diag(n) + lambda * crossprod(D), x))
-}
-tendencia_juro_real <- function(painel) {
-  cen <- serie_anexo("Graf 2.2.2", c("ri", "ri_anterior"))
-  composta <- ((1 + painel$exp_selic_12m / 100) / (1 + painel$exp_ipca_12m / 100) - 1) * 100
-  obs <- which(!is.na(composta) & painel$trimestre <= FIM_INFO)
-  com <- match(cen$trimestre[cen$trimestre <= FIM_INFO], painel$trimestre)
-  ajuste <- mean(composta[com] - cen$ri[cen$trimestre <= FIM_INFO])   # conferência: deve ficar perto de 0
-  ext <- cen$ri[cen$trimestre > FIM_INFO]
-  tend <- filtro_hp(c(composta[obs], ext))
-  out <- rep(NA_real_, nrow(painel)); out[obs] <- tend[seq_along(obs)]
-  attr(out, "ajuste") <- ajuste
-  out
-}
-
-preparar_dados <- function(e, brutos = BRUTOS) {
-  painel <- brutos$painel
-  painel$juro_real_hp <- as.numeric(tendencia_juro_real(painel))
-  painel_anual <- painel |>
-    select(-any_of(c("cds", "hiato_novo"))) |>
-    left_join(brutos$cds_trim, by = "trimestre") |>
-    left_join(brutos$hiato_mundo, by = "trimestre") |>
-    arrange(trimestre) |>
-    mutate(
-      juros_externos  = fedfunds + cds / 100,
-      delta_juros_ext = juros_externos - dplyr::lag(juros_externos),
-      hiato_mundial   = hiato_novo,
-      dselic          = selic - dplyr::lag(selic),
-      clima_el = clima_desvio(d_elnino * clima_sq * 100),     # décimos de grau
-      clima_la = clima_desvio(d_lanina * clima_sq * 100),
-      meta_exp = meta_12m + (8.5 - 4.0) * case_when(
-        year(trimestre) == 2003 ~ f_ano_corrente[quarter(trimestre)],
-        year(trimestre) == 2002 ~ 1 - f_ano_corrente[quarter(trimestre)],
-        TRUE                    ~ 0),
-      meta_cal = ifelse(year(trimestre) == 2003, 8.5, meta),
-      # taxas anualizadas
-      ipca_livres_sa_an = ipca_livres_sa * 4,
-      icbr_desvio_an    = icbr_desvio * 4,
-      var_cambio_an     = var_cambio * 4,
-      ipca_an_l0 = ipca_cheio_sa * 4,
-      ipca_an_l1 = dplyr::lag(ipca_an_l0, 1),
-      ipca_an_l2 = dplyr::lag(ipca_an_l0, 2),
-      ipca_an_l3 = dplyr::lag(ipca_an_l0, 3),
-      ipca_cheio_ma4_lag1 = media_lags(ipca_an_l0, 1:4),
-      # administrados na projeção E_t π
-      ipca_12m_passado = if (e$adm_projecao == "focus") adm_exp_12m else acum4(ipca_cheio_sa),
-      meta_exp_lag1 = dplyr::lag(meta_exp),
-      meta_exp_f1 = lead_ult(meta_exp, 1), meta_exp_f2 = lead_ult(meta_exp, 2),
-      meta_exp_f3 = lead_ult(meta_exp, 3), meta_exp_f4 = lead_ult(meta_exp, 4),
-      meta_cal_ma4_lag1 = media_lags(meta_cal, 1:4),
-      meta_cal_l0 = meta_cal,
-      meta_cal_l1 = dplyr::lag(meta_cal, 1),
-      meta_cal_l2 = dplyr::lag(meta_cal, 2),
-      meta_cal_l3 = dplyr::lag(meta_cal, 3),
-      meta_cal_f1 = lead_ult(meta_cal, 1), meta_cal_f2 = lead_ult(meta_cal, 2),
-      meta_cal_f3 = lead_ult(meta_cal, 3)
-    )
-  
-  janela <- painel_anual |> filter(trimestre >= AMOSTRA_INI, trimestre <= AMOSTRA_FIM)
-  
-  #a desocupação entra com sinal invertido pois a equação é de emprego
-  dados_obs <- janela |>
-    transmute(trimestre, fpib, fnuci, fdesoc = -fdesoc, fcaged,
-              pi_L = ipca_livres_sa_an, selic, dcambio = var_cambio_an, pi_focus = exp_ipca_12m)
-  
-  dados_exog <- janela |>
-    mutate(exp_selic_lag1   = dplyr::lag(exp_selic_12m),
-           r_trend_lag1     = dplyr::lag(juro_real_hp),
-           ipca_livres_lag1 = dplyr::lag(ipca_livres_sa_an),
-           dcambio_lag1     = dplyr::lag(var_cambio_an),
-           selic_lag1       = dplyr::lag(selic),
-           selic_lag2       = dplyr::lag(selic, 2),
-           meta_lag1        = dplyr::lag(meta))
-  
-  efetivo <- INICIO_EFETIVO:nrow(dados_exog)
-  
-  # AR(1) das exógenas usadas na projeção de E_t π
-  exog_ar  <- c("rp_hiato", "hiato_mundial", "icbr_desvio_an", "clima_el", "clima_la")
-  ar_coefs <- setNames(lapply(exog_ar, function(v) {
-    x <- dados_exog[[v]][efetivo]
-    list(mu = mean(x, na.rm = TRUE), rho = cor(x[-1], x[-length(x)], use = "complete.obs"))
-  }), exog_ar)
-  
-  list(painel_anual = painel_anual, dados_obs = dados_obs, dados_exog = dados_exog,
-       efetivo = efetivo, ar_coefs = ar_coefs)
-}
-
 prev_ar <- function(v, x_t, j) ar_coefs[[v]]$mu + ar_coefs[[v]]$rho^j * (x_t - ar_coefs[[v]]$mu)
 
 # secao 2 -----------------------------------------------------------------
-#essa seção reúne num só lugar todas as escolhas que o boxe deixa em aberto 
+#essa seção reúne todas as escolhas que o boxe deixa em aberto 
 #e cria as funções que trocam uma escolha por vez, para o 2_lacunas.R medir 
 #quanto cada uma pesa nos resultados.
 
@@ -293,9 +178,7 @@ construir_modelo <- function(par, ex) {
 }
 
 # Expectativa consistente com o modelo: E_t π_{t,t+4} = d_t + g_t'α_t.
-# Itera o modelo quatro trimestres à frente com a informação de t. Cada grandeza é
-# afim no estado (colunas: intercepto | estados | a própria E_t); como E aparece dos
-# dois lados, E = A + b·E => E = A / (1 − b).
+# Itera o modelo quatro trimestres à frente com a informação de t. 
 proj_afim <- function(par, ex, y, mod, H = 4) {
   pp <- as.list(par)
   n  <- nrow(ex); K <- m + 2
@@ -312,7 +195,7 @@ proj_afim <- function(par, ex, y, mod, H = 4) {
   E  <- matrix(0, n, K); E[, K] <- 1
   
   piL      <- coef_exp * pe + pp$alpha_4 * h + cst(mod$c_pi)
-  ipca_ult <- list(cst(ex$ipca_an_l0 - w * y$pi_L) + w * piL,           # IPCA de t … t−3
+  ipca_ult <- list(cst(ex$ipca_an_l0 - w * y$pi_L) + w * piL,          
                    cst(ex$ipca_an_l1), cst(ex$ipca_an_l2), cst(ex$ipca_an_l3))
   meta_f   <- cbind(ex$meta_exp_f1, ex$meta_exp_f2, ex$meta_exp_f3, ex$meta_exp_f4)
   meta_ant <- cbind(ex$meta_exp, meta_f[, 1:3])
@@ -405,7 +288,7 @@ construir_kfas_lp <- function(par, dados_exog, dados_obs, s_perfil) {
   proj <- proj_afim(par, dados_exog, dados_obs, mod)
   aj   <- aplicar_expectativa(Tt, Rt, proj, par["phi_2"])
   
-  # Condições iniciais [própria]: π^e começa na Focus do 1º trimestre (variância 4,
+  # Condições iniciais: π^e começa na Focus do 1º trimestre (variância 4,
   # desvio de 2 p.p.); hiato e choque da IS começam em zero com variâncias grandes
   # (100 e 10), para que os dados dominem; taxas neutras com variância p1_neutro
   ia <- INICIO_EFETIVO:n
@@ -743,9 +626,6 @@ for (nm in c("hiato", "neutra")) {
 }
 
 # ---- Comparação com o BCB (anexo estatístico do RI de jun/2024) ----
-# Hiato: Gráfico 2.2.6 do RI, com faixa de ±2 desvios-padrão. O RI informa que esse
-# hiato parte dos modelos de pequeno porte, mas incorpora outras metodologias e o
-# julgamento do Copom (seção 2.2): não é o hiato puro do modelo agregado.
 hiato_bcb   <- serie_anexo("Graf 2.2.6", c("bcb", "bcb_sup", "bcb_inf"))
 serie_hiato <- left_join(serie_hiato, hiato_bcb, by = "trimestre")
 cmp_hiato <- function(k, rotulo) with(serie_hiato[k, ], cat(sprintf(

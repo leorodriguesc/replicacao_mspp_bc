@@ -2,136 +2,88 @@ library(rbcb)
 library(sidrar)
 library(seasonal)
 library(mFilter)
-library(dplyr)       # >= 1.1.0 (join_by com desigualdades)
+library(dplyr)       
 library(lubridate)
-library(ggplot2)
 library(tidyr)
 library(jsonlite)
 library(readr)
+library(readxl)
+library(ggplot2)
 
 inicio <- as.Date("2002-01-01")
 fim    <- as.Date("2025-12-31")
 
-#PIB
-pib_raw <- get_sidra(
-  api = "/t/1620/n1/all/v/583/p/all/c11255/90707/d/v583%202"
-)
-
-pib_tri <- pib_raw |>
+# PIB: ajuste sazonal e filtro HP sobre a série desde 1996
+pib_tri <- get_sidra(api = "/t/1620/n1/all/v/583/p/all/c11255/90707/d/v583%202") |>
   as_tibble() |>
-  select(periodo = `Trimestre (Código)`, valor = Valor) |>
-  mutate(
-    ano       = as.integer(substr(periodo, 1, 4)),
-    trim_num  = as.integer(substr(periodo, 6, 6)),
-    trimestre = make_date(ano, (trim_num - 1) * 3 + 1, 1),
-    pib_index = as.numeric(valor)
-  ) |>
-  select(trimestre, pib_index) |>
+  transmute(trimestre = make_date(as.integer(substr(`Trimestre (Código)`, 1, 4)),
+                                  (as.integer(substr(`Trimestre (Código)`, 6, 6)) - 1) * 3 + 1, 1),
+            pib_index = as.numeric(Valor)) |>
   arrange(trimestre) |>
   filter(trimestre <= fim)   # sem corte inicial: X-13 e HP usam a série desde 1996
 
-ggplot(pib_tri, aes(x = trimestre, y = pib_index)) +
-  geom_line(color = "darkblue", linewidth = 0.8) +
-  labs(title = "PIB — Índice de volume trimestral (sem ajuste sazonal)",
-       y = "Índice (1995=100)", x = NULL) +
-  theme_minimal()
-
-#dessazonalizacao pib
-pib_ts <- ts(pib_tri$pib_index,
-             start = c(year(min(pib_tri$trimestre)),
-                       quarter(min(pib_tri$trimestre))),
+pib_ts <- ts(pib_tri$pib_index, start = c(year(min(pib_tri$trimestre)), quarter(min(pib_tri$trimestre))),
              frequency = 4)
-
-pib_x13 <- seas(pib_ts)
-summary(pib_x13)
-pib_sa <- final(pib_x13)
-
-# Comparação visual: original vs dessazonalizada
-df_pib <- data.frame(
-  trimestre = pib_tri$trimestre,
-  original  = as.numeric(pib_ts),
-  dessaz    = as.numeric(pib_sa)
-) |>
-  pivot_longer(c(original, dessaz), names_to = "tipo", values_to = "valor")
-
-ggplot(df_pib, aes(x = trimestre, y = valor, color = tipo)) +
-  geom_line(linewidth = 0.8) +
-  scale_color_manual(values = c("original" = "gray60", "dessaz" = "darkblue")) +
-  labs(title = "PIB: original (cinza) vs com ajuste sazonal (azul)",
-       y = "Índice", x = NULL, color = NULL) +
-  theme_minimal()
-
-#filtro hp
+pib_sa <- final(seas(pib_ts))
 pib_hp <- hpfilter(log(pib_sa), freq = 1600, type = "lambda")
 
-df_hp_pib <- data.frame(
-  trimestre = pib_tri$trimestre,
-  log_pib   = as.numeric(log(pib_sa)),
-  tendencia = as.numeric(pib_hp$trend),
-  ciclo     = as.numeric(pib_hp$cycle) * 100   # em pontos percentuais do PIB tendencial
-)
+df_pib <- tibble(trimestre = pib_tri$trimestre,
+                 original  = as.numeric(pib_ts),
+                 dessaz    = as.numeric(pib_sa),
+                 log_pib   = as.numeric(log(pib_sa)),
+                 tendencia = as.numeric(pib_hp$trend),
+                 fpib      = as.numeric(pib_hp$cycle) * 100)   # % do PIB tendencial
 
-ggplot(df_hp_pib, aes(x = trimestre)) +
-  geom_line(aes(y = log_pib, color = "log(PIB) dessaz"), linewidth = 0.8) +
-  geom_line(aes(y = tendencia, color = "Tendência HP"), linewidth = 0.8) +
-  scale_color_manual(values = c("log(PIB) dessaz" = "darkblue",
-                                "Tendência HP" = "darkred")) +
-  labs(title = "PIB dessazonalizado (azul) e tendência HP (vermelho) — em log",
-       y = "log(PIB)", x = NULL, color = NULL) +
-  theme_minimal()
+print(df_pib |>
+        pivot_longer(c(original, dessaz), names_to = "tipo", values_to = "valor") |>
+        ggplot(aes(trimestre, valor, color = tipo)) +
+        geom_line(linewidth = 0.8) +
+        scale_color_manual(values = c(original = "gray60", dessaz = "darkblue"),
+                           labels = c(original = "Original", dessaz = "Com ajuste sazonal")) +
+        labs(title = "PIB — índice de volume trimestral", y = "Índice (1995 = 100)", x = NULL, color = NULL) +
+        theme_minimal())
+print(ggplot(df_pib, aes(trimestre)) +
+        geom_line(aes(y = log_pib, color = "log(PIB) dessazonalizado"), linewidth = 0.8) +
+        geom_line(aes(y = tendencia, color = "Tendência HP"), linewidth = 0.8) +
+        scale_color_manual(values = c("log(PIB) dessazonalizado" = "darkblue", "Tendência HP" = "darkred")) +
+        labs(title = "PIB dessazonalizado e tendência HP — em log", y = "log(PIB)", x = NULL, color = NULL) +
+        theme_minimal())
+print(ggplot(df_pib, aes(trimestre, fpib)) +
+        geom_line(color = "darkblue", linewidth = 0.8) +
+        geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+        labs(title = "Componente cíclico do PIB (filtro HP, lambda = 1.600): fpib",
+             y = "% do PIB tendencial", x = NULL) +
+        theme_minimal())
 
-ggplot(df_hp_pib, aes(x = trimestre, y = ciclo)) +
-  geom_line(color = "darkblue", linewidth = 0.8) +
-  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
-  labs(title = "Componente cíclico do PIB (filtro HP, λ=1600)",
-       subtitle = "Esta é a variável f_pib do modelo do BCB",
-       y = "% do PIB tendencial", x = NULL) +
-  theme_minimal()
+pib_final <- df_pib |>
+  select(trimestre, fpib) |>
+  filter(trimestre >= inicio)                                       # corte só depois do filtro
 
-cat(sprintf("\nPIB: X-13 e HP de %s a %s (%d trimestres)\n",
-            format(min(df_hp_pib$trimestre)), format(max(df_hp_pib$trimestre)), nrow(df_hp_pib)))
-
-pib_final <- df_hp_pib |>
-  filter(trimestre >= inicio) |>   # corte só depois do filtro
-  select(trimestre, pib_index = log_pib, pib_tendencia = tendencia, fpib = ciclo)
-
-#EXPECTATIVAS IPCA
-focus_ipca_raw <- get_twelve_months_inflation_expectations(
-  indic = "IPCA",
-  start_date = inicio,
-  end_date = fim
-)
-
-focus_ipca_tri <- focus_ipca_raw |>
+# Focus: IPCA 12 meses à frente
+focus_ipca_tri <- get_twelve_months_inflation_expectations(indic = "IPCA", start_date = inicio,
+                                                           end_date = fim) |>
   filter(smoothed == "S", base == 0) |>      # suavizada, agregado total
   select(date, valor = median) |>
-  arrange(date) |>                            # garantir ordem cronológica
+  arrange(date) |>
   mutate(trimestre = floor_date(date, "quarter")) |>
   group_by(trimestre) |>
-  summarise(exp_ipca_12m = mean(valor), .groups = "drop")   # boxe: média ao longo do trimestre
+  summarise(exp_ipca_12m = mean(valor), .groups = "drop")
 
-ggplot(focus_ipca_tri, aes(x = trimestre, y = exp_ipca_12m)) +
-  geom_line(color = "darkred", linewidth = 0.8) +
-  geom_hline(yintercept = 3, linetype = "dashed", alpha = 0.5) +
-  labs(title = "Focus — Expectativa IPCA 12 meses à frente",
-       subtitle = "Mediana suavizada, média do trimestre",
-       y = "% a.a.", x = NULL) +
-  theme_minimal()
+print(ggplot(focus_ipca_tri, aes(trimestre, exp_ipca_12m)) +
+        geom_line(color = "darkred", linewidth = 0.8) +
+        labs(title = "Focus — expectativa do IPCA 12 meses à frente",
+             subtitle = "Mediana suavizada, média do trimestre", y = "% a.a.", x = NULL) +
+        theme_minimal())
 
-# ============================================================
-# EXPECTATIVA DA SELIC — MÉDIA AO LONGO DOS PRÓXIMOS 12 MESES
-# ============================================================
-
+# Focus: Selic média esperada nos 12 meses seguintes
+# Para cada data de pesquisa, a trajetória esperada fica na meta vigente até a
+# próxima reunião do Copom e, depois de cada reunião, na mediana esperada para ela.
+# Antes de nov/2004 (sem Focus por reunião), a trajetória é linear entre a meta
+# vigente e as expectativas para o fim do ano corrente e do seguinte.
 HORIZONTE      <- 365    # dias corridos
 MAX_PREENCHIDO <- 0.25   # fração máxima do horizonte que pode vir de "herança"
-# (reunião sem mediana no Focus herda o degrau anterior);
-# acima disso a data usa a aproximação pelas expectativas anuais
+# (reunião sem mediana herda o degrau anterior); acima disso vale a trajetória linear
 
-# ------------------------------------------------------------
-# Funções
-# ------------------------------------------------------------
-
-# Série diária do SGS em blocos (a API recusa janelas acima de 10 anos)
 baixar_sgs_diaria <- function(codigo, nome, inicio, fim, anos_bloco = 2) {
   cortes <- seq(inicio, fim, by = paste(anos_bloco, "years"))
   fins   <- c(cortes[-1] - 1, fim)
@@ -156,10 +108,7 @@ defasagem_vigencia <- function(datas_mudanca, datas_reuniao) {
   as.numeric(datas_mudanca[ok] - r[i[ok]])
 }
 
-# (a) Média da trajetória em degraus a partir do Focus por reunião.
-#  focus_reuniao: data, reuniao_codigo, mediana
-#  calendario:    reuniao_codigo, vigencia (primeiro dia com a nova meta)
-#  Retorna, por data de pesquisa: s0, media_reuniao, ponto_reuniao, frac_herdada
+# (a) Média da trajetória em degraus a partir do Focus por reunião
 media_trajetoria_reunioes <- function(focus_reuniao, calendario, meta_diaria,
                                       horizonte = 365, max_preenchido = 0.25) {
   datas <- focus_reuniao |>
@@ -167,7 +116,6 @@ media_trajetoria_reunioes <- function(focus_reuniao, calendario, meta_diaria,
     mutate(lim = data + horizonte,
            s0  = meta_vigente(data, meta_diaria))
   
-  # Reuniões que passam a valer dentro de (d, d + horizonte)
   degraus <- datas |>
     inner_join(calendario |> select(reuniao_codigo, vigencia),
                by = join_by(data < vigencia, lim > vigencia)) |>
@@ -181,20 +129,16 @@ media_trajetoria_reunioes <- function(focus_reuniao, calendario, meta_diaria,
            dur     = as.numeric(fim_deg - vigencia)) |>
     summarise(soma          = sum(valor * dur),
               dias_herdados = sum(dur[herdado]),
-              primeira      = first(vigencia),   # já ordenado por vigência
-              ponto         = last(valor),
+              primeira      = first(vigencia),
               .groups = "drop")
   
   datas |>
     left_join(degraus, by = "data") |>
     mutate(dias_s0       = as.numeric(coalesce(primeira, lim) - data),
            media_reuniao = (coalesce(soma, 0) + s0 * dias_s0) / horizonte,
-           ponto_reuniao = coalesce(ponto, s0),
            frac_herdada  = coalesce(dias_herdados, 0) / horizonte,
-           valida        = frac_herdada <= max_preenchido,
-           media_reuniao = if_else(valida, media_reuniao, NA_real_),
-           ponto_reuniao = if_else(valida, ponto_reuniao, NA_real_)) |>
-    select(data, s0, media_reuniao, ponto_reuniao, frac_herdada)
+           media_reuniao = if_else(frac_herdada <= max_preenchido, media_reuniao, NA_real_)) |>
+    select(data, media_reuniao)
 }
 
 # (b) Média da trajetória linear S0 -> S1 (31/dez do ano corrente) -> S2 (31/dez do seguinte)
@@ -204,7 +148,6 @@ media_trapezio <- function(s0, s1, s2, f) {
   f * (s0 + s1) / 2 + (1 - f) * s1 + (1 - f)^2 * (s2 - s1) / 2
 }
 
-#  anuais: data, ano_ref, mediana (Selic de fim de ano esperada para ano_ref)
 media_trajetoria_anual <- function(anuais, meta_diaria, horizonte = 365) {
   anuais |>
     mutate(horiz = case_when(ano_ref == year(data)     ~ "s1",
@@ -216,272 +159,158 @@ media_trajetoria_anual <- function(anuais, meta_diaria, horizonte = 365) {
     filter(!is.na(s1), !is.na(s2)) |>
     mutate(s0          = meta_vigente(data, meta_diaria),
            f           = pmin(pmax(as.numeric(make_date(year(data), 12, 31) - data) / horizonte, 0), 1),
-           media_anual = media_trapezio(s0, s1, s2, f),
-           ponto_anual = f * s1 + (1 - f) * s2) |>
-    select(data, media_anual, ponto_anual) |>
+           media_anual = media_trapezio(s0, s1, s2, f)) |>
+    select(data, media_anual) |>
     arrange(data)
 }
 
-# Emenda diária: por reunião onde é válida, anual no restante
-emendar_fontes <- function(reun, anual) {
-  full_join(reun |> select(data, media_reuniao, ponto_reuniao),
-            anual, by = "data") |>
-    arrange(data) |>
-    mutate(media = coalesce(media_reuniao, media_anual),
-           ponto = if_else(!is.na(media_reuniao), ponto_reuniao, ponto_anual),
-           fonte = case_when(!is.na(media_reuniao) ~ "reuniao",
-                             !is.na(media_anual)   ~ "anual"))
-}
-
-# ------------------------------------------------------------
-# 1. Meta Selic diária (SGS 432)
-# ------------------------------------------------------------
+# ---- 3.1 Meta Selic diária e calendário do Copom ----
 meta_diaria <- baixar_sgs_diaria(432, "meta", as.Date("2001-01-01"), fim)
 
-# ------------------------------------------------------------
-# 2. Calendário do Copom — passadas + futuras
-# ------------------------------------------------------------
 copom_passadas <- "https://www.bcb.gov.br/api/servico/sitebcb/copom/atas?quantidade=9999" |>
-  fromJSON() |> purrr::chuck("conteudo") |> as_tibble()
-
-copom_futuras <- paste0(
-  "https://www.bcb.gov.br/api/servico/sitebcb/agendas/itemmaisvelho?lista=",
-  "Reuni%C3%B5es%20do%20Copom"
-) |> fromJSON() |> purrr::chuck("conteudo") |> as_tibble()
-
-copom_passadas_clean <- copom_passadas |>
+  fromJSON() |> purrr::chuck("conteudo") |> as_tibble() |>
   mutate(data_reuniao = as_date(dataReferencia), ano = year(data_reuniao)) |>
   arrange(data_reuniao) |>
   select(data_reuniao, ano)
 
-copom_futuras_clean <- copom_futuras |>
+copom_futuras <- paste0("https://www.bcb.gov.br/api/servico/sitebcb/agendas/itemmaisvelho?lista=",
+                        "Reuni%C3%B5es%20do%20Copom") |>
+  fromJSON() |> purrr::chuck("conteudo") |> as_tibble() |>
   filter(evento == "Reunião do Copom") |>
   mutate(data_reuniao = as_date(dataEvento), ano = year(data_reuniao)) |>
   group_by(ano_mes = floor_date(data_reuniao, "month")) |>
   filter(data_reuniao == max(data_reuniao)) |>
   ungroup() |>
   select(data_reuniao, ano) |>
-  filter(data_reuniao > max(copom_passadas_clean$data_reuniao))
+  filter(data_reuniao > max(copom_passadas$data_reuniao))
 
-copom_calendario <- bind_rows(copom_passadas_clean, copom_futuras_clean) |>
+copom_calendario <- bind_rows(copom_passadas, copom_futuras) |>
   distinct(data_reuniao, .keep_all = TRUE) |>
   arrange(data_reuniao) |>
   group_by(ano) |>
-  mutate(numero_reuniao = row_number()) |>
-  ungroup() |>
-  mutate(reuniao_codigo = paste0("R", numero_reuniao, "/", ano))
+  mutate(reuniao_codigo = paste0("R", row_number(), "/", ano)) |>
+  ungroup()
 
-# ---- 2.1 Quando a nova meta passa a valer? ----
-# Mede, desde 2006, a distância entre cada mudança da meta (SGS 432) e a
-# reunião anterior. O esperado é 1 dia (decisão à noite, vigência no dia
-# seguinte). Se `dataReferencia` fosse o 1º dia da reunião, apareceria 2.
+# Quando a nova meta passa a valer: defasagem modal entre a reunião e a mudança
+# da meta no SGS (esperado: 1 dia, decisão à noite e vigência no dia seguinte)
 datas_mudanca <- meta_diaria |>
   filter(meta != lag(meta), date >= as.Date("2006-01-01")) |>
   pull(date)
-
-dif_vig <- defasagem_vigencia(datas_mudanca, copom_calendario$data_reuniao)
-cat("\n=== Dias entre a reunião e a mudança da meta (desde 2006) ===\n")
-print(table(cut(dif_vig, c(-Inf, 0, 1, 2, 3, 7, Inf),
-                labels = c("<=0", "1", "2", "3", "4-7", ">7"))))
-
-dif_ok <- dif_vig[dif_vig >= 1 & dif_vig <= 7]
-DIAS_ATE_VIGENCIA <- if (length(dif_ok) > 0) {
-  as.integer(names(which.max(table(dif_ok))))
-} else 1L
-cat("Vigência adotada: reunião +", DIAS_ATE_VIGENCIA, "dia(s)\n")
+dif_ok <- defasagem_vigencia(datas_mudanca, copom_calendario$data_reuniao)
+dif_ok <- dif_ok[dif_ok >= 1 & dif_ok <= 7]
+DIAS_ATE_VIGENCIA <- if (length(dif_ok) > 0) as.integer(names(which.max(table(dif_ok)))) else 1L
 if (DIAS_ATE_VIGENCIA != 1)
   warning("Defasagem modal diferente de 1 dia: confira o campo dataReferencia das atas.")
+copom_calendario <- copom_calendario |> mutate(vigencia = data_reuniao + DIAS_ATE_VIGENCIA)
 
-copom_calendario <- copom_calendario |>
-  mutate(vigencia = data_reuniao + DIAS_ATE_VIGENCIA)
-
-# ------------------------------------------------------------
-# 3. Focus — Selic por reunião
-# ------------------------------------------------------------
-url_selic_expec <- paste0(
-  "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/",
-  "ExpectativasMercadoSelic?$filter=baseCalculo%20eq%200&$format=text/csv"
-)
-
-selic_expec_raw <- read_csv(
-  url_selic_expec,
-  locale = locale(decimal_mark = ","),
-  show_col_types = FALSE,
-  progress = FALSE
-)
-
-focus_reuniao <- selic_expec_raw |>
-  transmute(data           = as_date(Data),
-            reuniao_codigo = Reuniao,
-            mediana        = as.numeric(Mediana)) |>
+# ---- 3.2 Focus por reunião e expectativas de fim de ano ----
+focus_reuniao <- read_csv(
+  paste0("https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odata/",
+         "ExpectativasMercadoSelic?$filter=baseCalculo%20eq%200&$format=text/csv"),
+  locale = locale(decimal_mark = ","), show_col_types = FALSE, progress = FALSE) |>
+  transmute(data = as_date(Data), reuniao_codigo = Reuniao, mediana = as.numeric(Mediana)) |>
   filter(!is.na(mediana)) |>
   distinct(data, reuniao_codigo, .keep_all = TRUE)
 
-# ---- 3.1 Checagens de cobertura e de numeração das reuniões ----
-cat("\n=== Focus por reunião ===\n")
-cat("Cobertura:", format(min(focus_reuniao$data)), "a", format(max(focus_reuniao$data)),
-    "|", n_distinct(focus_reuniao$data), "datas de pesquisa\n")
+n_sem_par <- n_distinct(anti_join(focus_reuniao, copom_calendario, by = "reuniao_codigo")$reuniao_codigo)
+if (n_sem_par > 0) warning(n_sem_par, " códigos de reunião do Focus sem par no calendário do Copom.")
 
-sem_calendario <- focus_reuniao |>
-  anti_join(copom_calendario, by = "reuniao_codigo") |>
-  distinct(reuniao_codigo)
-cat("Códigos de reunião do Focus sem par no calendário:", nrow(sem_calendario), "\n")
-if (nrow(sem_calendario) > 0) print(sem_calendario, n = 20)
-
-# Pesquisa feita depois da vigência da própria reunião indica numeração trocada
-apos_vigencia <- focus_reuniao |>
-  inner_join(copom_calendario |> select(reuniao_codigo, vigencia), by = "reuniao_codigo") |>
-  filter(data >= vigencia)
-cat("Linhas com data de pesquisa >= vigência da reunião:", nrow(apos_vigencia),
-    "(esperado: 0 ou muito poucas)\n")
-if (nrow(apos_vigencia) > 0)
-  print(count(apos_vigencia, ano = year(vigencia), name = "linhas"))
-
-# ------------------------------------------------------------
-# 4. Média pela trajetória em degraus (Focus por reunião)
-# ------------------------------------------------------------
-selic_reuniao <- media_trajetoria_reunioes(focus_reuniao, copom_calendario, meta_diaria,
-                                           horizonte = HORIZONTE,
-                                           max_preenchido = MAX_PREENCHIDO)
-
-cat("\nFração do horizonte preenchida por herança (por ano):\n")
-selic_reuniao |>
-  group_by(ano = year(data)) |>
-  summarise(media_herdada = round(mean(frac_herdada), 3),
-            datas_descartadas = sum(frac_herdada > MAX_PREENCHIDO),
-            .groups = "drop") |>
-  print(n = Inf)
-
-# ------------------------------------------------------------
-# 5. Média pela trajetória linear (expectativas de fim de ano)
-# ------------------------------------------------------------
-anuais_raw <- get_annual_market_expectations("Selic", start_date = inicio, end_date = fim)
-
-if (!any(anuais_raw$indic == "Selic"))
-  stop("Indicador 'Selic' não encontrado. Nomes disponíveis: ",
-       paste(unique(anuais_raw$indic), collapse = ", "))
-
-anuais_selic <- anuais_raw |>
+anuais_selic <- get_annual_market_expectations("Selic", start_date = inicio, end_date = fim) |>
   filter(indic == "Selic", base == 0) |>
-  transmute(data    = as_date(date),
-            ano_ref = as.integer(reference_date),
-            mediana = median) |>
+  transmute(data = as_date(date), ano_ref = as.integer(reference_date), mediana = median) |>
   arrange(data)
 
-selic_anual <- media_trajetoria_anual(anuais_selic, meta_diaria, horizonte = HORIZONTE)
-
-# ------------------------------------------------------------
-# 6. Emenda e trimestralização
-# ------------------------------------------------------------
-selic_diaria <- emendar_fontes(selic_reuniao, selic_anual) |>
+# ---- 3.3 Emenda diária e trimestralização ----
+selic_diaria <- full_join(
+  media_trajetoria_reunioes(focus_reuniao, copom_calendario, meta_diaria, HORIZONTE, MAX_PREENCHIDO),
+  media_trajetoria_anual(anuais_selic, meta_diaria, HORIZONTE),
+  by = "data") |>
+  arrange(data) |>
+  mutate(media = coalesce(media_reuniao, media_anual)) |>
   filter(data >= inicio, data <= fim)
 
-# ---- 6.1 Validação: as duas aproximações onde ambas existem ----
-sobrep_d <- selic_diaria |> filter(!is.na(media_reuniao), !is.na(media_anual))
-sobrep_t <- sobrep_d |>
-  mutate(trimestre = floor_date(data, "quarter")) |>
-  group_by(trimestre) |>
-  summarise(reuniao = mean(media_reuniao), anual = mean(media_anual), .groups = "drop")
+# Validação: as duas aproximações onde ambas existem (nota de rodapé da seção 3.2)
+sobrep <- selic_diaria |> filter(!is.na(media_reuniao), !is.na(media_anual))
+cat(sprintf("Selic esperada, degraus x linear: %d dias de sobreposição | cor = %.3f | dif. média = %+.2f p.p.\n",
+            nrow(sobrep), cor(sobrep$media_reuniao, sobrep$media_anual),
+            mean(sobrep$media_reuniao - sobrep$media_anual)))
 
-cat(sprintf(paste0("\nSobreposição degraus x linear: %d dias / %d trimestres\n",
-                   "  diária:     cor = %.3f | dif. média = %+.2f p.p. | |dif| p95 = %.2f p.p.\n",
-                   "  trimestral: cor = %.3f | dif. média = %+.2f p.p. | |dif| máx = %.2f p.p.\n"),
-            nrow(sobrep_d), nrow(sobrep_t),
-            cor(sobrep_d$media_reuniao, sobrep_d$media_anual),
-            mean(sobrep_d$media_reuniao - sobrep_d$media_anual),
-            quantile(abs(sobrep_d$media_reuniao - sobrep_d$media_anual), 0.95),
-            cor(sobrep_t$reuniao, sobrep_t$anual),
-            mean(sobrep_t$reuniao - sobrep_t$anual),
-            max(abs(sobrep_t$reuniao - sobrep_t$anual))))
-
-# ---- 6.2 Série trimestral (substitui a anterior) ----
-selic_tri_diag <- selic_diaria |>
+selic_focus_tri <- selic_diaria |>
   filter(!is.na(media)) |>
   mutate(trimestre = floor_date(data, "quarter")) |>
   group_by(trimestre) |>
-  summarise(exp_selic_12m       = mean(media),             # média ao longo de 12 meses (principal)
-            exp_selic_12m_ponto = mean(ponto, na.rm = TRUE), # ponto em t+12m (alternativa)
-            frac_reuniao        = mean(fonte == "reuniao"),
-            .groups = "drop")
+  summarise(exp_selic_12m = mean(media), .groups = "drop")
 
-selic_tri_diag <- selic_tri_diag |>
-  mutate(exp_selic_12m_ponto = ifelse(is.nan(exp_selic_12m_ponto), NA_real_, exp_selic_12m_ponto))
+meta_tri <- meta_diaria |>
+  group_by(trimestre = floor_date(date, "quarter")) |>
+  summarise(meta = mean(meta), .groups = "drop")
+print(ggplot(left_join(selic_focus_tri, meta_tri, by = "trimestre"), aes(trimestre)) +
+        geom_line(aes(y = meta, color = "Meta Selic vigente"), linewidth = 0.6) +
+        geom_line(aes(y = exp_selic_12m, color = "Selic esperada (média de 12 meses)"), linewidth = 0.8) +
+        scale_color_manual(values = c("Meta Selic vigente" = "grey55",
+                                      "Selic esperada (média de 12 meses)" = "darkblue")) +
+        labs(title = "Focus — Selic esperada para os 12 meses seguintes", y = "% a.a.", x = NULL, color = NULL) +
+        theme_minimal() + theme(legend.position = "bottom"))
 
-# Principal (média) e alternativa (ponto) seguem para o painel
-selic_focus_tri <- selic_tri_diag |> select(trimestre, exp_selic_12m, exp_selic_12m_ponto)
+# Juro real ex-ante e tendência
+# Tendência recalculada com a informação disponível na data do boxe: a série
+# observada vai até FIM_INFO e é estendida pelo cenário do RI de jun/2024
+# (Gráfico 2.2.2, juro real Focus quatro trimestres à frente, até 2026T4), como o
+# BCB faz com a sua medida (Focus 1 ano à frente, filtro HP: 5,2 em 2023T2).
+# O juro real é a taxa composta, a mesma do Gráfico 2.2.2. Na IS, o juro real
+# continua a diferença simples (equação do boxe), porque pi^e é um estado e o
+# modelo precisa ser linear nele.
+ARQ_ANEXO <- "ri202406anp.xlsx"
+FIM_INFO  <- as.Date("2024-01-01")
 
-# ---- 6.3 Quanto a correção muda a série ----
-cat("\nMédia (nova) − ponto em t+12m (antiga), trimestral:\n")
-cat(sprintf("  |dif| média = %.2f p.p. | trimestres com |dif| > 0,5 p.p.: %d de %d\n",
-            mean(abs(selic_tri_diag$exp_selic_12m - selic_tri_diag$exp_selic_12m_ponto)),
-            sum(abs(selic_tri_diag$exp_selic_12m - selic_tri_diag$exp_selic_12m_ponto) > 0.5),
-            nrow(selic_tri_diag)))
-cat("  Maiores diferenças:\n")
-selic_tri_diag |>
-  mutate(dif = exp_selic_12m - exp_selic_12m_ponto) |>
-  slice_max(abs(dif), n = 8) |>
-  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
-  print()
-
-print(
-  selic_tri_diag |>
-    select(trimestre,
-           `Média em 12 meses (nova)` = exp_selic_12m,
-           `Ponto em t+12m (antiga)`  = exp_selic_12m_ponto) |>
-    pivot_longer(-trimestre, names_to = "medida", values_to = "valor") |>
-    ggplot(aes(trimestre, valor, color = medida)) +
-    geom_line(linewidth = 0.8) +
-    scale_color_manual(values = c("darkblue", "grey55")) +
-    labs(title = "Focus — Selic esperada para os próximos 12 meses",
-         subtitle = "A diferença entre as duas aparece nos ciclos de aperto e afrouxamento",
-         y = "% a.a.", x = NULL, color = NULL) +
-    theme_minimal() +
-    theme(legend.position = "bottom")
-)
-
-# 5. Juro real ex-ante (diferença simples, eq. 2.1 do boxe)
-# ---- HP que ignora os NAs das pontas (o hpfilter não aceita NA) ----
-hp_seguro <- function(x, lambda = 1600) {
-  ok <- which(!is.na(x))
-  if (length(ok) == 0) stop("Série inteiramente NA")
-  if (any(diff(ok) != 1)) stop("NA no meio da série — o HP exige um trecho contínuo")
-  tendencia <- rep(NA_real_, length(x))
-  tendencia[ok] <- as.numeric(hpfilter(x[ok], freq = lambda, type = "lambda")$trend)
-  tendencia
+como_num  <- function(x) suppressWarnings(as.numeric(x))
+serie_anexo <- function(nome, nomes) {
+  a <- as.data.frame(suppressMessages(read_excel(ARQ_ANEXO, sheet = nome, col_names = FALSE)))
+  a <- a[!is.na(como_num(a[[1]])) & como_num(a[[1]]) > 30000, ]
+  d <- data.frame(trimestre = floor_date(as.Date(como_num(a[[1]]), origin = "1899-12-30"), "quarter"))
+  for (j in seq_along(nomes)) d[[nomes[j]]] <- como_num(a[[j + 1]])
+  d
+}
+filtro_hp <- function(x, lambda = 1600) {
+  n <- length(x); D <- diff(diag(n), differences = 2)
+  as.numeric(solve(diag(n) + lambda * crossprod(D), x))
 }
 
 focus_consolidado <- focus_ipca_tri |>
   full_join(selic_focus_tri, by = "trimestre") |>
-  arrange(trimestre) |>                                    # HP exige ordem cronológica
-  mutate(
-    juro_real_exante =  exp_selic_12m - exp_ipca_12m,
-    juro_real_hp     = hp_seguro(juro_real_exante),
-    # Alternativa: Selic esperada no ponto de 12 meses. A tendência HP é refeita
-    # com ela, porque a Selic esperada entra na IS e também na tendência do juro
-    # real que compõe a taxa neutra.
-    juro_real_exante_ponto = exp_selic_12m_ponto - exp_ipca_12m,
-    juro_real_hp_ponto     = hp_seguro(juro_real_exante_ponto)
-  )
+  arrange(trimestre) |>
+  mutate(juro_real_exante = exp_selic_12m - exp_ipca_12m)
 
-cat(sprintf(paste0("\nTendência HP do juro real — ponto menos média: dif. média = %+.2f p.p. | ",
-                   "|dif| máx = %.2f p.p.\n"),
-            mean(focus_consolidado$juro_real_hp_ponto - focus_consolidado$juro_real_hp, na.rm = TRUE),
-            max(abs(focus_consolidado$juro_real_hp_ponto - focus_consolidado$juro_real_hp), na.rm = TRUE)))
+cen      <- serie_anexo("Graf 2.2.2", c("ri", "ri_anterior"))
+composta <- with(focus_consolidado, ((1 + exp_selic_12m / 100) / (1 + exp_ipca_12m / 100) - 1) * 100)
+obs      <- which(!is.na(composta) & focus_consolidado$trimestre <= FIM_INFO)
+tend     <- filtro_hp(c(composta[obs], cen$ri[cen$trimestre > FIM_INFO]))
+focus_consolidado$juro_real_hp <- NA_real_
+focus_consolidado$juro_real_hp[obs] <- tend[seq_along(obs)]
 
-ggplot(focus_consolidado |> filter(!is.na(juro_real_hp)), aes(x = trimestre)) +
-  geom_line(aes(y = juro_real_exante, color = "Juro real ex-ante"),
-            linewidth = 0.7) +
-  geom_line(aes(y = juro_real_hp, color = "Tendência HP"),
-            linewidth = 0.9) +
-  scale_color_manual(values = c("Juro real ex-ante" = "darkblue",
-                                "Tendência HP" = "darkred")) +
-  labs(title = "Juro real ex-ante e tendência HP",
-       subtitle = "r̄^trend será usado como input do modelo",
-       y = "% a.a.", x = NULL, color = NULL) +
-  theme_minimal()
+com <- match(cen$trimestre[cen$trimestre <= FIM_INFO], focus_consolidado$trimestre)
+cat(sprintf("Juro real composto x Gráfico 2.2.2 até 2024T1: dif. média %+.2f p.p. (deve ficar perto de 0)\n",
+            mean(composta[com] - cen$ri[cen$trimestre <= FIM_INFO])))
+cat(sprintf("Tendência do juro real em 2023T2: %.2f (BCB: 5,2)\n",
+            focus_consolidado$juro_real_hp[focus_consolidado$trimestre == as.Date("2023-04-01")]))
 
+print(ggplot(filter(mutate(focus_consolidado, composta = composta), !is.na(juro_real_exante)), aes(trimestre)) +
+        geom_line(aes(y = juro_real_exante, color = "Juro real ex-ante (diferença simples)"), linewidth = 0.5) +
+        geom_line(aes(y = composta, color = "Juro real ex-ante (taxa composta)"), linewidth = 0.5) +
+        geom_line(aes(y = juro_real_hp, color = "Tendência HP (composta)"), linewidth = 0.9) +
+        geom_point(data = cen, aes(trimestre, ri, color = "Cenário do RI (Gráfico 2.2.2)"), size = 1) +
+        scale_color_manual(values = c("Juro real ex-ante (diferença simples)" = "grey65",
+                                      "Juro real ex-ante (taxa composta)" = "darkblue",
+                                      "Tendência HP (composta)" = "darkred",
+                                      "Cenário do RI (Gráfico 2.2.2)" = "black")) +
+        labs(title = "Juro real ex-ante e tendência HP", y = "% a.a.", x = NULL, color = NULL) +
+        theme_minimal() + theme(legend.position = "bottom") +
+        guides(color = guide_legend(nrow = 2)))
+
+# Consolidação
 dados2a <- pib_final |>
   full_join(focus_consolidado, by = "trimestre") |>
   arrange(trimestre)
 
-write.csv(dados2a,"dados2a.csv", row.names = FALSE)
+write.csv(dados2a, "dados2a.csv", row.names = FALSE)
+cat("Gravado: dados2a.csv\n")

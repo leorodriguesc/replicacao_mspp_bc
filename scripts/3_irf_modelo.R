@@ -11,8 +11,6 @@ reqm     <- function(a, b) sqrt(mean((a - b)^2))                 # raiz do erro 
 imprimir <- function(df) { num <- sapply(df, is.numeric); df[num] <- round(df[num], 3); print(df, row.names = FALSE) }
 
 # Respostas do boxe (modelo agregado), do anexo estatístico do RI de jun/2024.
-# Convenção do boxe, adotada aqui: o trimestre 0 é o anterior ao choque e o choque
-# ocorre no trimestre 1.
 ler_irf <- function(nome, col = 2) {
   a <- aba_anexo(nome); a <- a[como_num(a[[1]]) %in% 0:16, ]
   como_num(a[[col]])[order(como_num(a[[1]]))]
@@ -24,6 +22,7 @@ BOXE_CANAIS <- data.frame(trimestre = 0:16,
                           `Expectativa e câmbio livres`    = ler_irf("C2 Boxe3 Graf 4B", 2),
                           `Expectativa livre, câmbio fixo` = ler_irf("C2 Boxe3 Graf 4B", 3),
                           `Expectativa e câmbio fixos`     = ler_irf("C2 Boxe3 Graf 4B", 4), check.names = FALSE)
+
 # Livres e administrados só aparecem no texto do boxe, como efeitos máximos
 BOXE_TEXTO <- c(cambio_livres = 0.72, cambio_adm = 1.65)
 
@@ -64,7 +63,6 @@ coef_operador <- function(par, w = W_LIVRES, rho = RHO_ICBR, H = 4) {
 # Administrados: indexados ao IPCA dos quatro trimestres anteriores; uma fração
 # comb_adm passa a seguir o câmbio no mesmo trimestre (ver FRACAO_ADM abaixo).
 # canal_cambio = FALSE fixa o câmbio; canal_exp = FALSE fixa as expectativas.
-# Saída na convenção do boxe: trimestre 0 antes do choque, choque no trimestre 1.
 simular_irf <- function(par, tipo = c("juros_regra", "juros", "cambio", "hiato"),
                         canal_cambio = TRUE, canal_exp = TRUE, comb_adm = 0,
                         H = H_IRF, w = W_LIVRES, max_it = 1000, tol = 1e-10) {
@@ -140,6 +138,7 @@ simular_irf <- function(par, tipo = c("juros_regra", "juros", "cambio", "hiato")
              adm_acum4    = acum4(adm)[k])
 }
 
+# Moda da posteriori (theta_modo vem do 1_modelo.R; o nome do objeto foi mantido)
 p_modo <- combinar_par(theta_modo)
 p_bcb  <- combinar_par(par_bcb_base)
 
@@ -158,13 +157,16 @@ FRACAO_ADM <- uniroot(function(f) adm_max(f) - BOXE_TEXTO[["cambio_adm"]], c(0, 
 cat(sprintf("FRACAO_ADM = %.3f (efeito máximo nos administrados, modas do BCB: %.2f)\n",
             FRACAO_ADM, adm_max(FRACAO_ADM)))
 
-#Respostas no nosso modo, com bandas, e nas modas do BCB
+# Respostas na nossa moda, com bandas, e nas modas do BCB
+ROTULO_MODA <- "Nossa moda"                    # rótulo usado nas tabelas e nas figuras
 CHOQUES <- c(juros = "juros_regra", cambio = "cambio", hiato = "hiato")
 VARS    <- c("selic", "hiato", "cambio_acum", "ipca_acum4", "livres_acum4", "adm_acum4")
-VERSOES <- list(`Nosso modo`                  = list(par = p_modo, f = 0),
-                `Modas do BCB`                = list(par = p_bcb,  f = 0),
-                `Nosso modo, adm. no câmbio`   = list(par = p_modo, f = FRACAO_ADM),
-                `Modas do BCB, adm. no câmbio` = list(par = p_bcb,  f = FRACAO_ADM))
+VERSOES <- setNames(list(list(par = p_modo, f = 0),
+                         list(par = p_bcb,  f = 0),
+                         list(par = p_modo, f = FRACAO_ADM),
+                         list(par = p_bcb,  f = FRACAO_ADM)),
+                    c(ROTULO_MODA, "Modas do BCB",
+                      paste0(ROTULO_MODA, ", adm. no câmbio"), "Modas do BCB, adm. no câmbio"))
 
 set.seed(13)
 sorteios <- sample(nrow(amostras), N_DRAWS)
@@ -193,7 +195,7 @@ for (nm in names(CHOQUES)) {
 linha <- function(nm, var, boxe = NA, tri_boxe = NA) {
   df <- irf[[nm]]; pp <- picos_post[[nm]][, var]
   data.frame(choque = nm, variavel = var,
-             modo = pico(df[[var]]), tri_modo = tri_pico(df, var),
+             moda = pico(df[[var]]), tri_moda = tri_pico(df, var),
              post_mediana = median(pp, na.rm = TRUE),
              post_q05 = quantile(pp, .05, na.rm = TRUE), post_q95 = quantile(pp, .95, na.rm = TRUE),
              modas_bcb = pico(df[[paste0(var, "_bcb")]]), tri_bcb = tri_pico(df, paste0(var, "_bcb")),
@@ -232,7 +234,7 @@ cat(sprintf("Hiato após o choque de demanda, modas do BCB x anexo: REQM %.3f\n"
             reqm(versoes$hiato$`Modas do BCB`$hiato, BOXE$hiato$hiato)))
 
 
-# 3. Canais de transmissão: trajetória fixa da Selic
+# Canais de transmissão: trajetória fixa da Selic
 CANAIS <- list(`Expectativa e câmbio livres`    = c(cambio = TRUE,  exp = TRUE),
                `Expectativa livre, câmbio fixo` = c(cambio = FALSE, exp = TRUE),
                `Expectativa e câmbio fixos`     = c(cambio = FALSE, exp = FALSE))
@@ -241,11 +243,12 @@ tab_canais <- do.call(rbind, lapply(names(CANAIS), function(nm) {
   do.call(rbind, lapply(names(VERSOES), function(v) {
     r <- simular_irf(VERSOES[[v]]$par, "juros", canal_cambio = CANAIS[[nm]][["cambio"]],
                      canal_exp = CANAIS[[nm]][["exp"]], comb_adm = VERSOES[[v]]$f)
-    if (v == "Nosso modo") canais[[nm]] <<- r$ipca_acum4
+    if (v == ROTULO_MODA) canais[[nm]] <<- r$ipca_acum4
     data.frame(canal = nm, versao = v, maximo = pico(r$ipca_acum4), tri = tri_pico(r, "ipca_acum4"),
                tri4 = r$ipca_acum4[5], tri16 = r$ipca_acum4[17], reqm = reqm(r$ipca_acum4, BOXE_CANAIS[[nm]]))
   }))
 }))
+stopifnot(all(names(CANAIS) %in% names(canais)))   # garante que a figura dos canais tem as três curvas
 cat("\n=== Canais de transmissão (Selic em trajetória fixa) contra o anexo ===\n")
 tab_canais <- rbind(data.frame(canal = names(CANAIS), versao = "Boxe (anexo)",
                                maximo = sapply(names(CANAIS), function(nm) pico(BOXE_CANAIS[[nm]])),
@@ -273,7 +276,7 @@ blocos <- rbind(
     pp <- p_bcb; pp[BLOCOS[[b]]] <- p_modo[BLOCOS[[b]]]
     resumo_juros(pp, paste("BCB com o nosso bloco:", b))
   })),
-  resumo_juros(p_modo, "Nosso modo"))
+  resumo_juros(p_modo, ROTULO_MODA))
 cat(sprintf("\n=== Choque de juros: troca de blocos de parâmetros (boxe: %.2f no trimestre %d) ===\n",
             max_boxe("juros")[1], max_boxe("juros")[2])); imprimir(blocos)
 
@@ -299,16 +302,16 @@ tema <- theme_minimal(base_size = TAM, base_family = FONTE) +
         strip.text = element_text(hjust = 0, size = TAM), plot.margin = margin(4, 8, 4, 4))
 linha_zero <- geom_hline(yintercept = 0, colour = CINZA, linewidth = 0.3)
 
-SERIES <- c("Nosso modo", "Nosso modelo nas modas do BCB", "Boxe (anexo do RI)")
+SERIES <- c(ROTULO_MODA, "Nosso modelo nas modas do BCB", "Boxe (anexo do RI)")
 painel_ab <- function(df, va, rot_a) {
   rot_b  <- "B. IPCA acumulado em quatro trimestres"
   niveis <- c(rot_a, rot_b)
   lng <- function(v, painel) data.frame(trimestre = df$trimestre, painel = painel,
                                         lo = df[[paste0(v, "_q05")]], hi = df[[paste0(v, "_q95")]],
-                                        modo = df[[v]], bcb = df[[paste0(v, "_bcb")]], boxe = df[[paste0(v, "_boxe")]])
+                                        moda = df[[v]], bcb = df[[paste0(v, "_bcb")]], boxe = df[[paste0(v, "_boxe")]])
   d <- rbind(lng(va, rot_a), lng("ipca_acum4", rot_b)); d$painel <- factor(d$painel, niveis)
-  dl <- pivot_longer(d, c(modo, bcb, boxe), names_to = "serie", values_to = "valor")
-  dl$serie <- factor(c(modo = SERIES[1], bcb = SERIES[2], boxe = SERIES[3])[dl$serie], SERIES)
+  dl <- pivot_longer(d, c(moda, bcb, boxe), names_to = "serie", values_to = "valor")
+  dl$serie <- factor(c(moda = SERIES[1], bcb = SERIES[2], boxe = SERIES[3])[dl$serie], SERIES)
   ggplot(d, aes(trimestre)) +
     linha_zero +
     geom_ribbon(aes(ymin = lo, ymax = hi, fill = "Intervalo de 90% (posteriori)")) +
@@ -356,7 +359,7 @@ salvar(patchwork::wrap_plots(gA, gB, widths = c(1, 1.25)) +
          patchwork::plot_layout(guides = "collect") & theme(legend.position = "top"),
        "fig5_2_cambio.pdf", 8.5)
 
-#Canais de transmissão, no nosso modo; linhas pontilhadas: boxe (Gráfico 4B do anexo)
+#Canais de transmissão, na nossa moda; linhas pontilhadas: boxe (Gráfico 4B do anexo)
 dc <- pivot_longer(canais, -trimestre, names_to = "canal", values_to = "valor")
 dc$canal <- factor(dc$canal, names(CANAIS))
 dcb <- pivot_longer(BOXE_CANAIS, -trimestre, names_to = "canal", values_to = "valor")
