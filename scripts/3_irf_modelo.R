@@ -302,7 +302,14 @@ tema <- theme_minimal(base_size = TAM, base_family = FONTE) +
         strip.text = element_text(hjust = 0, size = TAM), plot.margin = margin(4, 8, 4, 4))
 linha_zero <- geom_hline(yintercept = 0, colour = CINZA, linewidth = 0.3)
 
-SERIES <- c(ROTULO_MODA, "Nosso modelo nas modas do BCB", "Boxe (anexo do RI)")
+# Rótulos das legendas das figuras de juros e de demanda
+LEG_MODA  <- "Este trabalho (moda estimada)"
+LEG_BCB   <- "Este trabalho com os parâmetros do BCB"
+LEG_BOXE  <- "Publicado no boxe do BCB"
+LEG_FAIXA <- "Faixa de 90% (extrações da posteriori)"
+
+# Juros e demanda: A, a variável que recebe o choque; B, o IPCA acumulado em quatro trimestres
+SERIES <- c(LEG_MODA, LEG_BCB, LEG_BOXE)
 painel_ab <- function(df, va, rot_a) {
   rot_b  <- "B. IPCA acumulado em quatro trimestres"
   niveis <- c(rot_a, rot_b)
@@ -314,7 +321,7 @@ painel_ab <- function(df, va, rot_a) {
   dl$serie <- factor(c(moda = SERIES[1], bcb = SERIES[2], boxe = SERIES[3])[dl$serie], SERIES)
   ggplot(d, aes(trimestre)) +
     linha_zero +
-    geom_ribbon(aes(ymin = lo, ymax = hi, fill = "Intervalo de 90% (posteriori)")) +
+    geom_ribbon(aes(ymin = lo, ymax = hi, fill = LEG_FAIXA)) +
     geom_line(data = dl, aes(y = valor, colour = serie, linetype = serie, linewidth = serie)) +
     facet_wrap(~ painel, scales = "free_y") +
     scale_fill_manual(values = adjustcolor(AZUL, 0.18)) +
@@ -322,7 +329,7 @@ painel_ab <- function(df, va, rot_a) {
     scale_linetype_manual(values = c("solid", "dashed", "dotted")) +
     scale_linewidth_manual(values = c(0.9, 0.6, 0.7)) +
     EIXO_X + scale_y_continuous(labels = virgula) +
-    labs(x = "Trimestres", y = "p.p.") + tema +
+    labs(x = "Trimestres após o choque", y = "p.p.") + tema +
     theme(legend.box = "vertical", legend.spacing.y = unit(0, "pt")) +
     guides(colour = guide_legend(order = 1), linetype = guide_legend(order = 1),
            linewidth = guide_legend(order = 1), fill = guide_legend(order = 2))
@@ -347,19 +354,26 @@ gA <- ggplot(data.frame(trimestre = cb$trimestre, valor = cb$cambio_acum), aes(t
   labs(x = "Trimestres", y = "%", subtitle = "A. Câmbio, variação acumulada") + tema
 gB <- ggplot(dB, aes(trimestre, valor, colour = serie)) +
   linha_zero +
-  geom_ribbon(data = dB[dB$serie == "IPCA", ], aes(ymin = lo, ymax = hi), fill = adjustcolor(AZUL, 0.18), colour = NA) +
+  geom_ribbon(data = dB[dB$serie == "IPCA", ], aes(ymin = lo, ymax = hi, fill = "Faixa de 90% da posteriori (IPCA)"),
+              colour = NA) +
   geom_hline(data = refB, aes(yintercept = y, colour = serie), linetype = "dotted", linewidth = 0.5, show.legend = FALSE) +
   geom_line(data = data.frame(trimestre = cb$trimestre, valor = cb$ipca_acum4_boxe, serie = factor("IPCA", NIVEIS)),
             linetype = "dotted", linewidth = 0.7, show.legend = FALSE) +
   geom_line(linewidth = 0.8) +
   scale_colour_manual(values = c(IPCA = AZUL, Livres = LARANJA, Administrados = VERDE), breaks = NIVEIS) +
+  scale_fill_manual(values = adjustcolor(AZUL, 0.18)) +
   EIXO_X + scale_y_continuous(labels = virgula) +
-  labs(x = "Trimestres", y = "p.p.", subtitle = "B. Inflação acumulada em quatro trimestres") + tema
+  labs(x = "Trimestres", y = "p.p.", subtitle = "B. Inflação acumulada em quatro trimestres") + tema +
+  guides(colour = guide_legend(order = 1), fill = guide_legend(order = 2))
 salvar(patchwork::wrap_plots(gA, gB, widths = c(1, 1.25)) +
          patchwork::plot_layout(guides = "collect") & theme(legend.position = "top"),
        "fig5_2_cambio.pdf", 8.5)
 
-#Canais de transmissão, na nossa moda; linhas pontilhadas: boxe (Gráfico 4B do anexo)
+#Canais de transmissão, na nossa moda (linhas contínuas); linhas pontilhadas: boxe (Gráfico 4B do anexo).
+# Os nomes de CANAIS ficam como estão (tabelas); só o texto e a ordem da legenda mudam.
+ROT_CANAIS <- c(`Expectativa e câmbio livres`    = "Canais da demanda, câmbio e expectativas",
+                `Expectativa livre, câmbio fixo` = "Canal da demanda e expectativas",
+                `Expectativa e câmbio fixos`     = "Só o canal da demanda")
 dc <- pivot_longer(canais, -trimestre, names_to = "canal", values_to = "valor")
 dc$canal <- factor(dc$canal, names(CANAIS))
 dcb <- pivot_longer(BOXE_CANAIS, -trimestre, names_to = "canal", values_to = "valor")
@@ -367,9 +381,10 @@ dcb$canal <- factor(dcb$canal, names(CANAIS))
 g54 <- ggplot(dc, aes(trimestre, valor, colour = canal)) +
   linha_zero +
   geom_line(data = dcb, linetype = "dotted", linewidth = 0.6, show.legend = FALSE) +
-  geom_line(aes(linetype = canal), linewidth = 0.9) +
-  scale_colour_manual(values = c(AZUL, LARANJA, CINZA)) +
-  scale_linetype_manual(values = c("solid", "dashed", "dotdash")) +
+  geom_line(linewidth = 0.9) +
+  scale_colour_manual(values = setNames(c(AZUL, LARANJA, CINZA), names(CANAIS)),
+                      breaks = rev(names(CANAIS)), labels = ROT_CANAIS[rev(names(CANAIS))]) +
   EIXO_X + scale_y_continuous(labels = virgula) +
-  labs(x = "Trimestres", y = "p.p.") + tema
+  labs(x = "Trimestres", y = "p.p.") + tema +
+  guides(colour = guide_legend(nrow = 1))
 salvar(g54, "fig5_4_canais.pdf", 8)
